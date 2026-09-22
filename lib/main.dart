@@ -11,6 +11,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
+import 'package:http/http.dart' as http;
+import 'package:pdf/pdf.dart' as pw;
+import 'package:pdf/widgets.dart' as pw;
+import 'package:permission_handler/permission_handler.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -177,28 +181,6 @@ class NotificationService {
     }
   }
 
-  // Tambahkan fungsi ini agar aman dipanggil dari DashboardScreen
-  static Future<void> showTestNotification() async {
-    const androidDetails = AndroidNotificationDetails(
-      'tambak_warning_channel_v2S',
-      'Peringatan Sensor Tambak',
-      channelDescription:
-          'Notifikasi saat kualitas air keluar dari ambang batas',
-      importance: Importance.max,
-      priority: Priority.high,
-      playSound: false,
-      enableVibration: true,
-    );
-
-    const details = NotificationDetails(android: androidDetails);
-    await _plugin.show( 
-      999,
-      '⚠️ UJI COBA ALARM',
-      'Suara alarm tet tet tet berhasil diputar!',
-      details,
-    );
-  }
-
   static Future<void> notifyIfDue({
     required String sensorKey,
     required String sensorLabel,
@@ -305,14 +287,39 @@ class Thresholds {
 }
 
 class MonitoringTambakApp extends StatelessWidget {
-  const MonitoringTambakApp({Key? key}) : super(key: key);
+  const MonitoringTambakApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       title: 'AQUATOR Mobile',
-      home: SplashScreen(),
       debugShowCheckedModeBanner: false,
+      themeMode: ThemeMode.system,
+      theme: ThemeData(
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: Colors.white,
+        textTheme: const TextTheme(
+          bodyMedium: TextStyle(color: Colors.black87),
+        ),
+      ),
+      darkTheme: ThemeData(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF121212),
+        appBarTheme: AppBarTheme(
+          backgroundColor: AppColors.primary,
+          foregroundColor: Colors.white,
+          elevation: 0,
+        ),
+        bottomNavigationBarTheme: BottomNavigationBarThemeData(
+          backgroundColor: AppColors.primary,
+          selectedItemColor: Colors.white,
+          unselectedItemColor: Colors.white60,
+        ),
+        textTheme: const TextTheme(
+          bodyMedium: TextStyle(color: Colors.white),
+        ),
+      ),
+      home: const SplashScreen(),
     );
   }
 }
@@ -321,7 +328,7 @@ class MonitoringTambakApp extends StatelessWidget {
 // 1. SPLASH SCREEN
 // ==========================================
 class SplashScreen extends StatefulWidget {
-  const SplashScreen({Key? key}) : super(key: key);
+  const SplashScreen({super.key});
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
@@ -426,7 +433,7 @@ class _SplashScreenState extends State<SplashScreen>
 // 2. DASHBOARD SCREEN
 // ==========================================
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({Key? key}) : super(key: key);
+  const DashboardScreen({super.key});
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -435,36 +442,22 @@ class DashboardScreen extends StatefulWidget {
 enum MqttUiStatus { connecting, connected, failed, disconnected }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  Future<void> _testAlarmNotification() async {
-    try {
-      final player = AudioPlayer();
-      await player.play(AssetSource('alarm_tet.wav'));
-
-      await NotificationService.showTestNotification();
-    } catch (e) {
-      debugPrint('Gagal memutar audio: $e');
-    }
-  }
-
   int _currentIndex = 0;
   bool isDarkMode = false;
 
   void _changeTab(int index) {
     if (index == 1) {
-      // Ubah ke Landscape saat masuk Remote
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
       ]);
     } else {
-      // Ubah kembali ke Portrait saat di Dashboard/Laporan
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.portraitUp,
         DeviceOrientation.portraitDown,
       ]);
     }
 
-    // Baru update state-nya
     setState(() {
       _currentIndex = index;
     });
@@ -507,6 +500,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ),
   ];
 
+  String _tempFilterStatus = 'Semua';
+  DateTime? _tempFilterStartDate;
+  DateTime? _tempFilterEndDate;
+
   String _filterStatus = 'Semua';
   DateTime? _filterStartDate;
   DateTime? _filterEndDate;
@@ -530,8 +527,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   bool _isAiLoading = false;
   String? _aiRecommendation;
-  static const String _geminiApiKey =
-      'AQ.Ab8RN6KMlBtsZmEI3KHkFlvznT6vqgw0Vih5DrcQ5jvuHydBbw';
 
   @override
   void initState() {
@@ -542,23 +537,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  // >>> LETAKKAN DI SINI (sejajar dengan method lain dalam state) <<<
-  Future<void> _exportToExcel() async {
+  // ==========================================
+  // FUNGSI EKSPOR EXCEL
+  // ==========================================
+  Future<void> _exportToExcel(List<RecordItem> dataToExport) async {
     try {
+      var status = await Permission.storage.request();
+      if (!status.isGranted) {
+        await Permission.manageExternalStorage.request();
+      }
+
       var excel = Excel.createExcel();
       Sheet sheetObject = excel['Laporan Tambak'];
 
       sheetObject.appendRow([
-        TextCellValue('Waktu'),
+        TextCellValue('Tanggal & Waktu'),
         TextCellValue('pH'),
         TextCellValue('Suhu (°C)'),
         TextCellValue('TDS (ppm)'),
-        TextCellValue('NTU'),
-        TextCellValue('Kualitas'),
+        TextCellValue('Kekeruhan (NTU)'),
+        TextCellValue('Kualitas Air'),
         TextCellValue('Status'),
       ]);
 
-      for (var r in _records) {
+      for (var r in dataToExport) {
         sheetObject.appendRow([
           TextCellValue(
             '${r.time.day}/${r.time.month}/${r.time.year} ${r.time.hour.toString().padLeft(2, '0')}:${r.time.minute.toString().padLeft(2, '0')}',
@@ -573,31 +575,164 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
 
       var fileBytes = excel.save();
-      final tempDir = await getTemporaryDirectory();
+
+      final now = DateTime.now();
+      final dateStr =
+          '${now.day.toString().padLeft(2, '0')}-${now.month.toString().padLeft(2, '0')}-${now.year}';
+
+      Directory? directory = Directory('/storage/emulated/0/Download');
+      if (!await directory.exists()) {
+        directory = await getExternalStorageDirectory();
+      }
+
       final filePath =
-          '${tempDir.path}/Laporan_Tambak_${DateTime.now().millisecondsSinceEpoch}.xlsx';
+          '${directory!.path}/Laporan Tambak Aquator $dateStr.xlsx';
       final file = File(filePath);
       await file.create(recursive: true);
       await file.writeAsBytes(fileBytes!);
 
-      final result = await Share.shareXFiles([
-        XFile(filePath),
-      ], text: 'Laporan Kualitas Air Tambak');
+      await Share.shareXFiles([XFile(filePath)],
+          text: 'Laporan Kualitas Air Tambak (Excel)');
 
-      if (result.status == ShareResultStatus.success) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Laporan berhasil dibagikan/disimpan!'),
-            ),
-          );
-        }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  'Excel disimpan & dibagikan: Laporan Tambak Aquator $dateStr.xlsx')),
+        );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Gagal export: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Gagal export Excel: $e')),
+        );
+      }
+    }
+  }
+
+// ==========================================
+  // FUNGSI EKSPOR PDF (Persis Sama Sesuai Web)
+  // ==========================================
+  Future<void> _exportToPdf(List<RecordItem> dataToExport) async {
+    try {
+      final pdf = pw.Document();
+
+      final now = DateTime.now();
+      // Format tanggal dan waktu disesuaikan agar mirip (contoh: 22/9/2026, 16.01.35)
+      final dateStr =
+          '${now.day}/${now.month}/${now.year}, ${now.hour.toString().padLeft(2, '0')}.${now.minute.toString().padLeft(2, '0')}.${now.second.toString().padLeft(2, '0')}';
+      final fileDateStr =
+          '${now.day.toString().padLeft(2, '0')}-${now.month.toString().padLeft(2, '0')}-${now.year}';
+
+      pdf.addPage(
+        pw.MultiPage(
+          pageFormat: pw.PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.all(32),
+          build: (pw.Context context) => [
+            // Judul Laporan menggunakan tanda hubung biasa (-) agar aman dari karakter korup (kotak)
+            pw.Text(
+              'AQUATOR - Laporan Kualitas Air',
+              style: pw.TextStyle(
+                fontSize: 18,
+                fontWeight: pw.FontWeight.bold,
+                color: const pw.PdfColor.fromInt(0xFF0B5FA5),
+              ),
+            ),
+            pw.SizedBox(height: 6),
+
+            // Sub-informasi waktu & jumlah data
+            pw.Text(
+              'Dicetak: $dateStr | Menampilkan total ${dataToExport.length} data monitoring',
+              style: const pw.TextStyle(
+                fontSize: 10,
+                color: pw.PdfColor.fromInt(0xFF7C8A99),
+              ),
+            ),
+            pw.SizedBox(height: 14),
+
+            // Tabel Data PDF dengan Styling Identik seperti Web
+            pw.Table.fromTextArray(
+              headers: [
+                'Tanggal & Waktu',
+                'pH',
+                'Suhu (°C)',
+                'TDS (ppm)',
+                'Kekeruhan (NTU)',
+                'Kualitas Air',
+                'Status'
+              ],
+              data: dataToExport.map((r) {
+                return [
+                  '${r.time.day}/${r.time.month}/${r.time.year} ${r.time.hour.toString().padLeft(2, '0')}:${r.time.minute.toString().padLeft(2, '0')}',
+                  r.ph.toStringAsFixed(1),
+                  '${r.suhu.toStringAsFixed(1)}°C',
+                  r.tds.toStringAsFixed(0),
+                  r.kekeruhan.toStringAsFixed(1),
+                  r.kualitas,
+                  r.status,
+                ];
+              }).toList(),
+              // Menyesuaikan lebar kolom agar proporsional dan tidak bergeser
+              columnWidths: {
+                0: const pw.FlexColumnWidth(2.2),
+                1: const pw.FlexColumnWidth(0.9),
+                2: const pw.FlexColumnWidth(1.2),
+                3: const pw.FlexColumnWidth(1.2),
+                4: const pw.FlexColumnWidth(1.5),
+                5: const pw.FlexColumnWidth(1.2),
+                6: const pw.FlexColumnWidth(1.1),
+              },
+              headerStyle: pw.TextStyle(
+                fontSize: 10.5,
+                fontWeight: pw.FontWeight.bold,
+                color: const pw.PdfColor.fromInt(0xFF0F172A),
+              ),
+              headerDecoration: const pw.BoxDecoration(
+                color: pw.PdfColor.fromInt(
+                    0xFFCCECE6), // Warna toska persis seperti web
+              ),
+              // Border tipis elegan seperti tampilan web
+              border: pw.TableBorder.all(
+                color: pw.PdfColor.fromInt(0xFFE2E8F0),
+                width: 0.6,
+              ),
+              cellStyle: const pw.TextStyle(
+                fontSize: 10,
+                color: pw.PdfColor.fromInt(0xFF1E293B),
+              ),
+              cellAlignment: pw.Alignment.centerLeft,
+              cellPadding:
+                  const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            ),
+          ],
+        ),
+      );
+
+      Directory? directory = Directory('/storage/emulated/0/Download');
+      if (!await directory.exists()) {
+        directory = await getExternalStorageDirectory();
+      }
+
+      final filePath =
+          '${directory!.path}/Laporan Tambak Aquator $fileDateStr.pdf';
+      final file = File(filePath);
+      await file.writeAsBytes(await pdf.save());
+
+      await Share.shareXFiles([XFile(filePath)],
+          text: 'Laporan Kualitas Air Tambak (PDF)');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  'PDF berhasil disimpan ke Download: Laporan Tambak Aquator $fileDateStr.pdf')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Gagal export PDF: $e')),
+        );
       }
     }
   }
@@ -813,7 +948,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     String summary = 'Semua parameter berada dalam kondisi aman.';
 
     if (score < 55 || abnormalCount >= 2) {
-      status = 'Bahaya';
+      status = 'Critical';
       conditionText = 'BURUK';
       color = AppColors.danger;
       summary =
@@ -839,9 +974,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_values['ph'] == '--' || _values['suhu'] == '--') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-            'Menunggu data sensor masuk sebelum meminta analisis AI.',
-          ),
+          content:
+              Text('Menunggu data sensor masuk sebelum meminta analisis ML.'),
           backgroundColor: AppColors.warning,
         ),
       );
@@ -851,64 +985,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() => _isAiLoading = true);
 
     try {
-      final ph = _values['ph'] ?? '--';
-      final suhu = _values['suhu'] ?? '--';
-      final tds = _values['tds'] ?? '--';
-      final ntu = _values['kekeruhan'] ?? '--';
+      final url =
+          Uri.parse('http://192.168.68.207:8000/api/nama-endpoint-teman-anda');
 
-      final prompt = '''
-Anda adalah asisten pakar akuakultur tambak udang & ikan mujaer di Sidoarjo.
-Data kondisi air saat ini:
-- pH: $ph (Batas normal: ${thresholds.phMin} - ${thresholds.phMax})
-- Suhu: $suhu °C (Batas normal: ${thresholds.suhuMin} - ${thresholds.suhuMax})
-- TDS: $tds ppm (Batas normal: ${thresholds.tdsMin} - ${thresholds.tdsMax})
-- Kekeruhan: $ntu NTU (Batas normal: ${thresholds.kekeruhanMin} - ${thresholds.kekeruhanMax})
-
-Format jawaban Anda HARUS persis seperti berikut (jangan ada baris tambahan):
-EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
-1. [Judul Tindakan]: [Detail langkah tindakan praktis]
-2. [Judul Tindakan]: [Detail langkah tindakan praktis]
-''';
-
-      final url = Uri.parse(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$_geminiApiKey',
-      );
-      final request = await HttpClient().postUrl(url);
-      request.headers.set('content-type', 'application/json');
-      request.add(
-        utf8.encode(
-          jsonEncode({
-            'contents': [
-              {
-                'parts': [
-                  {'text': prompt},
-                ],
-              },
-            ],
-          }),
-        ),
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'ph': _values['ph'],
+          'suhu': _values['suhu'],
+          'tds': _values['tds'],
+          'kekeruhan': _values['kekeruhan'],
+        }),
       );
 
-      final response = await request.close();
-      final reply = await response.transform(utf8.decoder).join();
-      final data = jsonDecode(reply);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        final hasilAsli = data['rekomendasi'] ??
+            data['data'] ??
+            data['hasil'] ??
+            response.body;
 
-      if (response.statusCode == 200) {
-        final text = data['candidates'][0]['content']['parts'][0]['text'];
         setState(() {
-          _aiRecommendation = text.trim();
+          _aiRecommendation = hasilAsli.toString();
         });
       } else {
-        final errMsg =
-            data['error']?['message'] ?? 'Gagal memanggil API Gemini';
         setState(() {
-          _aiRecommendation = 'Peringatan AI: $errMsg';
+          _aiRecommendation =
+              'Peringatan ML: Gagal memproses data di server (Kode: ${response.statusCode})';
         });
       }
     } catch (e) {
       setState(() {
         _aiRecommendation =
-            'Gagal menghubungi server AI. Pastikan internet Anda aktif.';
+            'Gagal menghubungi server web backend. Pastikan Laragon menyala.';
       });
     } finally {
       if (mounted) setState(() => _isAiLoading = false);
@@ -928,8 +1038,7 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
   }
 
   Widget _buildAiResponseContent(String rawText) {
-    if (rawText.startsWith('Peringatan AI:') ||
-        rawText.startsWith('Gagal menghubungi')) {
+    if (rawText.startsWith('Peringatan') || rawText.startsWith('Gagal')) {
       return Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
@@ -973,8 +1082,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
     final List<String> steps = [];
 
     for (final line in lines) {
-      if (RegExp(r'^(1\.|2\.|3\.|-|\u2022)').hasMatch(line)) {
-        steps.add(line.replaceFirst(RegExp(r'^(1\.|2\.|3\.|-|\u2022)\s*'), ''));
+      if (RegExp(r'^(1\.|2\.|3\.|4\.|5\.|6\.|-|\u2022)').hasMatch(line)) {
+        steps.add(line.replaceFirst(
+            RegExp(r'^(1\.|2\.|3\.|4\.|5\.|6\.|-|\u2022)\s*'), ''));
       } else if (line.toUpperCase().startsWith('EVALUASI:')) {
         summary = line.substring(9).trim();
       } else if (!line.toLowerCase().contains('langkah aksi') &&
@@ -985,7 +1095,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
     }
 
     if (summary.isEmpty && steps.isNotEmpty) {
-      summary = 'Hasil analisis kualitas air kolam tambak:';
+      summary = 'Hasil diagnosis & analisis kualitas air tambak:';
+    } else if (summary.isEmpty && steps.isEmpty) {
+      summary = clean;
     }
 
     return Column(
@@ -1003,9 +1115,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Icon(
-                Icons.info_outline_rounded,
+                Icons.check_circle_outline_rounded,
                 size: 20,
-                color: Color(0xFF0284C7),
+                color: Color(0xFF059669),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -1015,7 +1127,7 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                     fontSize: 12.5,
                     color: Color(0xFF334155),
                     height: 1.45,
-                    fontWeight: FontWeight.w500,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
@@ -1023,88 +1135,125 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
           ),
         ),
         if (steps.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          const Text(
-            'Langkah Tindakan Cepat:',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w800,
-              color: Color(0xFF0F172A),
-            ),
-          ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 16),
           ...List.generate(steps.length, (index) {
             final item = steps[index];
             final splitIdx = item.indexOf(':');
-            final title = splitIdx != -1
-                ? item.substring(0, splitIdx).trim()
-                : 'Tindakan ${index + 1}';
+            final title = 'Langkah Tindakan ${index + 1}';
             final desc =
                 splitIdx != -1 ? item.substring(splitIdx + 1).trim() : item;
 
             return Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.all(12),
+              margin: const EdgeInsets.only(bottom: 12),
               decoration: BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: const Color(0xFFE2E8F0)),
                 boxShadow: const [
                   BoxShadow(
-                    color: Color(0x06000000),
-                    blurRadius: 6,
+                    color: Color(0x08000000),
+                    blurRadius: 8,
                     offset: Offset(0, 2),
                   ),
                 ],
               ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 24,
-                    height: 24,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFF0284C7),
-                      shape: BoxShape.circle,
-                    ),
-                    alignment: Alignment.center,
-                    child: Text(
-                      '${index + 1}',
-                      style: const TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
+              child: IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Container(
+                      width: 5,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF3B82F6),
+                        borderRadius:
+                            BorderRadius.horizontal(left: Radius.circular(10)),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          title,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF0F172A),
-                          ),
-                        ),
-                        if (desc != title) ...[
-                          const SizedBox(height: 3),
-                          Text(
-                            desc,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Color(0xFF64748B),
-                              height: 1.4,
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.all(14.0),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFEFF6FF),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(
+                                    Icons.assignment_turned_in_rounded,
+                                    color: Color(0xFF3B82F6),
+                                    size: 18,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  '#${index + 1}',
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                    color: Color(0xFF64748B),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
-                        ],
-                      ],
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 8, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFEFF6FF),
+                                          borderRadius:
+                                              BorderRadius.circular(4),
+                                        ),
+                                        child: const Text(
+                                          'SOP ACTION',
+                                          style: TextStyle(
+                                            fontSize: 9.5,
+                                            fontWeight: FontWeight.w800,
+                                            color: Color(0xFF3B82F6),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    title,
+                                    style: const TextStyle(
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    desc,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF475569),
+                                      height: 1.45,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             );
           }),
@@ -1178,7 +1327,7 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-          onPressed: () => _changeTab(0), // <-- Gunakan fungsi _changeTab
+          onPressed: () => _changeTab(0),
         ),
         title: const Row(
           children: [
@@ -1196,40 +1345,6 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
         ),
         backgroundColor: AppColors.primary,
         elevation: 0,
-        actions: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: status == MqttUiStatus.connected
-                    ? AppColors.safe
-                    : AppColors.danger,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    status == MqttUiStatus.connected
-                        ? Icons.wifi_rounded
-                        : Icons.wifi_off_rounded,
-                    color: Colors.white,
-                    size: 14,
-                  ),
-                  const SizedBox(width: 5),
-                  Text(
-                    status == MqttUiStatus.connected ? 'ONLINE' : 'OFFLINE',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -1258,13 +1373,6 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                       shape: BoxShape.circle,
                       color: Colors.black.withOpacity(0.3),
                       border: Border.all(color: Colors.white24, width: 3),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Colors.black45,
-                          blurRadius: 10,
-                          spreadRadius: 2,
-                        ),
-                      ],
                     ),
                     child: Stack(
                       alignment: Alignment.center,
@@ -1276,16 +1384,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                             child: Container(
                               width: 55,
                               height: 55,
-                              decoration: BoxDecoration(
+                              decoration: const BoxDecoration(
                                 shape: BoxShape.circle,
                                 color: AppColors.primary,
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Colors.black38,
-                                    blurRadius: 4,
-                                    offset: Offset(0, 2),
-                                  ),
-                                ],
                               ),
                               child: const Icon(
                                 Icons.arrow_upward_rounded,
@@ -1302,16 +1403,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                             child: Container(
                               width: 55,
                               height: 55,
-                              decoration: BoxDecoration(
+                              decoration: const BoxDecoration(
                                 shape: BoxShape.circle,
                                 color: AppColors.primary,
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Colors.black38,
-                                    blurRadius: 4,
-                                    offset: Offset(0, 2),
-                                  ),
-                                ],
                               ),
                               child: const Icon(
                                 Icons.arrow_downward_rounded,
@@ -1369,13 +1463,6 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                       shape: BoxShape.circle,
                       color: Colors.black.withOpacity(0.3),
                       border: Border.all(color: Colors.white24, width: 3),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Colors.black45,
-                          blurRadius: 10,
-                          spreadRadius: 2,
-                        ),
-                      ],
                     ),
                     child: Stack(
                       alignment: Alignment.center,
@@ -1387,16 +1474,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                             child: Container(
                               width: 55,
                               height: 55,
-                              decoration: BoxDecoration(
+                              decoration: const BoxDecoration(
                                 shape: BoxShape.circle,
                                 color: AppColors.primary,
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Colors.black38,
-                                    blurRadius: 4,
-                                    offset: Offset(0, 2),
-                                  ),
-                                ],
                               ),
                               child: const Icon(
                                 Icons.arrow_back_rounded,
@@ -1413,20 +1493,14 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                             child: Container(
                               width: 55,
                               height: 55,
-                              decoration: BoxDecoration(
+                              decoration: const BoxDecoration(
                                 shape: BoxShape.circle,
                                 color: AppColors.primary,
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Colors.black38,
-                                    blurRadius: 4,
-                                    offset: Offset(0, 2),
-                                  ),
-                                ],
                               ),
                               child: const Icon(
                                 Icons.arrow_forward_rounded,
                                 size: 28,
+                                color: Colors.white,
                               ),
                             ),
                           ),
@@ -1442,7 +1516,6 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
       ),
     );
 
-    // Filter Data Laporan (Urut otomatis berdasarkan waktu terbaru)
     List<RecordItem> filteredRecords = _records.where((item) {
       if (_filterStatus != 'Semua' && item.status != _filterStatus) {
         return false;
@@ -1495,51 +1568,88 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
             'Pantau dan analisis data kualitas air yang direkam otomatis setiap 30 menit.',
             style: TextStyle(color: AppColors.textMuted, fontSize: 13),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: _testAlarmNotification,
-              icon: const Icon(Icons.notifications_active_rounded,
-                  color: Colors.white),
-              label: const Text(
-                'Uji Coba Bunyi Alarm',
-                style:
-                    TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.warning,
-                padding: const EdgeInsets.symmetric(vertical: 12),
+                backgroundColor: const Color(0xFF10B981),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
+                elevation: 2,
+              ),
+              onPressed: () {
+                showModalBottomSheet(
+                  context: context,
+                  backgroundColor:
+                      isDarkMode ? const Color(0xFF1E293B) : Colors.white,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius:
+                        BorderRadius.vertical(top: Radius.circular(20)),
+                  ),
+                  builder: (context) {
+                    return Padding(
+                      padding: const EdgeInsets.all(20.0),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Pilih Format Ekspor Laporan',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: isDarkMode ? Colors.white : Colors.black87,
+                            ),
+                          ),
+                          const SizedBox(height: 15),
+                          ListTile(
+                            leading: const Icon(Icons.table_chart_rounded,
+                                color: Colors.green),
+                            title: Text(
+                              'Ekspor sebagai Excel (.xlsx)',
+                              style: TextStyle(
+                                  color: isDarkMode
+                                      ? Colors.white70
+                                      : Colors.black87),
+                            ),
+                            onTap: () {
+                              Navigator.pop(context);
+                              _exportToExcel(filteredRecords);
+                            },
+                          ),
+                          ListTile(
+                            leading: const Icon(Icons.picture_as_pdf_rounded,
+                                color: Colors.red),
+                            title: Text(
+                              'Ekspor sebagai PDF (.pdf)',
+                              style: TextStyle(
+                                  color: isDarkMode
+                                      ? Colors.white70
+                                      : Colors.black87),
+                            ),
+                            onTap: () {
+                              Navigator.pop(context);
+                              _exportToPdf(filteredRecords);
+                            },
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+              icon: const Icon(Icons.download_rounded),
+              label: const Text(
+                'Export Laporan (Excel / PDF)',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
               ),
             ),
           ),
           const SizedBox(height: 16),
-          // ---> TOMBOL EXPORT DITARUH DI SINI (DI ATAS FILTER) <---
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _exportToExcel,
-              icon: const Icon(Icons.download_rounded, color: Colors.white),
-              label: const Text(
-                'Export Data ke Excel',
-                style:
-                    TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.safe,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // GRID KARTU STATISTIK
           GridView.count(
             crossAxisCount: 2,
             crossAxisSpacing: 12,
@@ -1603,8 +1713,6 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
             ],
           ),
           const SizedBox(height: 20),
-
-          // CARD FILTER DATA
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -1637,8 +1745,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                             firstDate: DateTime(2025),
                             lastDate: DateTime(2030),
                           );
-                          if (picked != null)
-                            setState(() => _filterStartDate = picked);
+                          if (picked != null) {
+                            setState(() => _tempFilterStartDate = picked);
+                          }
                         },
                         child: InputDecorator(
                           decoration: InputDecoration(
@@ -1650,9 +1759,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                             ),
                           ),
                           child: Text(
-                            _filterStartDate == null
+                            _tempFilterStartDate == null
                                 ? 'dd/mm/yyyy'
-                                : '${_filterStartDate!.day}/${_filterStartDate!.month}/${_filterStartDate!.year}',
+                                : '${_tempFilterStartDate!.day}/${_tempFilterStartDate!.month}/${_tempFilterStartDate!.year}',
                             style: TextStyle(
                               color: isDarkMode ? Colors.white : Colors.black87,
                             ),
@@ -1670,8 +1779,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                             firstDate: DateTime(2025),
                             lastDate: DateTime(2030),
                           );
-                          if (picked != null)
-                            setState(() => _filterEndDate = picked);
+                          if (picked != null) {
+                            setState(() => _tempFilterEndDate = picked);
+                          }
                         },
                         child: InputDecorator(
                           decoration: InputDecoration(
@@ -1683,9 +1793,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                             ),
                           ),
                           child: Text(
-                            _filterEndDate == null
+                            _tempFilterEndDate == null
                                 ? 'dd/mm/yyyy'
-                                : '${_filterEndDate!.day}/${_filterEndDate!.month}/${_filterEndDate!.year}',
+                                : '${_tempFilterEndDate!.day}/${_tempFilterEndDate!.month}/${_tempFilterEndDate!.year}',
                             style: TextStyle(
                               color: isDarkMode ? Colors.white : Colors.black87,
                             ),
@@ -1700,7 +1810,7 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                   children: [
                     Expanded(
                       child: DropdownButtonFormField<String>(
-                        value: _filterStatus,
+                        value: _tempFilterStatus,
                         dropdownColor:
                             isDarkMode ? const Color(0xFF1E293B) : Colors.white,
                         style: TextStyle(
@@ -1713,34 +1823,57 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                             color: isDarkMode ? Colors.white70 : Colors.black87,
                           ),
                         ),
-                        items: ['Semua', 'Normal', 'Warning', 'Bahaya']
+                        items: ['Semua', 'Normal', 'Warning', 'Critical']
                             .map(
                               (s) => DropdownMenuItem(value: s, child: Text(s)),
                             )
                             .toList(),
                         onChanged: (val) {
-                          if (val != null) setState(() => _filterStatus = val);
+                          if (val != null) {
+                            setState(() => _tempFilterStatus = val);
+                          }
                         },
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    ElevatedButton(
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    OutlinedButton(
                       onPressed: () {
                         setState(() {
+                          _tempFilterStartDate = null;
+                          _tempFilterEndDate = null;
+                          _tempFilterStatus = 'Semua';
                           _filterStartDate = null;
                           _filterEndDate = null;
                           _filterStatus = 'Semua';
                         });
                       },
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20, vertical: 12),
+                      ),
+                      child: const Text('Reset'),
+                    ),
+                    const SizedBox(width: 10),
+                    ElevatedButton(
+                      onPressed: () {
+                        setState(() {
+                          _filterStartDate = _tempFilterStartDate;
+                          _filterEndDate = _tempFilterEndDate;
+                          _filterStatus = _tempFilterStatus;
+                        });
+                      },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primary,
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 16,
-                        ),
+                            horizontal: 20, vertical: 12),
                       ),
                       child: const Text(
-                        'Reset',
+                        'Terapkan',
                         style: TextStyle(color: Colors.white),
                       ),
                     ),
@@ -1749,7 +1882,6 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
               ],
             ),
           ),
-
           const SizedBox(height: 20),
           Text(
             'Data Monitoring (${filteredRecords.length} hasil)',
@@ -1760,8 +1892,6 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
             ),
           ),
           const SizedBox(height: 10),
-
-          // TABEL DATA
           Container(
             decoration: BoxDecoration(
               color: isDarkMode ? const Color(0xFF1E293B) : Colors.white,
@@ -1902,7 +2032,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                             fontWeight: FontWeight.bold,
                             color: item.status == 'Normal'
                                 ? AppColors.safe
-                                : AppColors.danger,
+                                : (item.status == 'Warning'
+                                    ? AppColors.warning
+                                    : AppColors.danger),
                           ),
                         ),
                       ),
@@ -1918,17 +2050,12 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
 
     final List<Widget> pages = [dashboardWidget, rcWidget, laporanWidget];
 
-    // Bungkus Scaffold dengan PopScope untuk mencegat tombol back hardware
     return PopScope(
-      canPop: _currentIndex ==
-          0, // Aplikasi hanya bisa ditutup jika sedang di tab Dashboard (index 0)
+      canPop: _currentIndex == 0,
       onPopInvokedWithResult: (bool didPop, dynamic result) {
         if (didPop) return;
-
-        // Jika ditekan back saat di menu Remote/Laporan, kembalikan ke Dashboard
         if (_currentIndex != 0) {
-          _changeTab(
-              0); // <--- UBAH DI SINI: Gunakan _changeTab agar rotasi layar tertangani
+          _changeTab(0);
         }
       },
       child: Scaffold(
@@ -1936,10 +2063,9 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
         bottomNavigationBar: _currentIndex == 1
             ? null
             : Container(
-                decoration: BoxDecoration(
-                  color:
-                      isDarkMode ? const Color(0xFF1E293B) : AppColors.primary,
-                  boxShadow: const [
+                decoration: const BoxDecoration(
+                  color: AppColors.primary,
+                  boxShadow: [
                     BoxShadow(
                       color: Colors.black26,
                       blurRadius: 8,
@@ -1949,8 +2075,7 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
                 ),
                 child: BottomNavigationBar(
                   currentIndex: _currentIndex,
-                  onTap:
-                      _changeTab, // <--- UBAH JUGA DI SINI: Langsung panggil fungsi _changeTab
+                  onTap: _changeTab,
                   backgroundColor: Colors.transparent,
                   elevation: 0,
                   type: BottomNavigationBarType.fixed,
@@ -2060,8 +2185,8 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
   SliverAppBar _buildAppBar(BuildContext context) {
     return SliverAppBar(
       pinned: true,
-      toolbarHeight: 56, // Tinggi standar toolbar agar lebih ke atas/rapi
-      expandedHeight: 70, // Diperpendek lagi agar tidak terlalu besar ke bawah
+      toolbarHeight: 56,
+      expandedHeight: 70,
       backgroundColor: AppColors.primary,
       elevation: 0,
       titleSpacing: 0,
@@ -2069,7 +2194,6 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
         padding: const EdgeInsets.only(left: 8),
         child: Row(
           children: [
-            // Logo rounded lebih kecil (32x32)
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: Image.asset(
@@ -2080,7 +2204,6 @@ EVALUASI: [Tuliskan 1-2 kalimat ringkasan kondisi air]
               ),
             ),
             const SizedBox(width: 10),
-            // Teks judul
             const Expanded(
               child: Text(
                 'Dashboard Tambak',
@@ -3087,11 +3210,11 @@ class SettingsScreen extends StatefulWidget {
   final bool isDarkMode;
 
   const SettingsScreen({
-    Key? key,
+    super.key,
     required this.initial,
     required this.onSave,
     required this.isDarkMode,
-  }) : super(key: key);
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
