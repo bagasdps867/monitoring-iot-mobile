@@ -305,12 +305,12 @@ class MonitoringTambakApp extends StatelessWidget {
       darkTheme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF121212),
-        appBarTheme: AppBarTheme(
+        appBarTheme: const AppBarTheme(
           backgroundColor: AppColors.primary,
           foregroundColor: Colors.white,
           elevation: 0,
         ),
-        bottomNavigationBarTheme: BottomNavigationBarThemeData(
+        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
           backgroundColor: AppColors.primary,
           selectedItemColor: Colors.white,
           unselectedItemColor: Colors.white60,
@@ -444,6 +444,77 @@ enum MqttUiStatus { connecting, connected, failed, disconnected }
 class _DashboardScreenState extends State<DashboardScreen> {
   int _currentIndex = 0;
   bool isDarkMode = false;
+  bool _isLoadingRecords = false;
+
+  List<RecordItem> _records = [];
+
+  Future<void> _fetchRecordsFromDatabase() async {
+    setState(() => _isLoadingRecords = true);
+    try {
+      final url = Uri.parse('http://172.14.5.252:8000/api/laporan');
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final decodedData = jsonDecode(response.body);
+        final List<dynamic> jsonList =
+            (decodedData is Map && decodedData.containsKey('data'))
+                ? decodedData['data']
+                : decodedData;
+
+        setState(() {
+          _records = jsonList.map((item) {
+            return RecordItem(
+              time: DateTime.tryParse(item['waktu']?.toString() ?? '') ??
+                  DateTime.now(),
+              ph: double.tryParse(item['ph']?.toString() ?? '0') ?? 0.0,
+              suhu: double.tryParse(item['suhu']?.toString() ?? '0') ?? 0.0,
+              tds: double.tryParse(item['tds']?.toString() ?? '0') ?? 0.0,
+              kekeruhan:
+                  double.tryParse(item['kekeruhan']?.toString() ?? '0') ?? 0.0,
+              kualitas: item['kualitas']?.toString() ?? 'Baik',
+              status: item['status']?.toString() ?? 'Normal',
+            );
+          }).toList();
+        });
+      }
+    } catch (e) {
+      // Jika masih ada yang gagal, error-nya akan muncul di Debug Console
+      print('GAGAL MEMBACA DATA JSON: $e');
+    } finally {
+      if (mounted) setState(() => _isLoadingRecords = false);
+    }
+  }
+
+  Future<void> _fetchThresholds() async {
+    try {
+      // Pastikan URL dan port sesuai dengan server Laravel Anda
+      final url = Uri.parse('http://172.14.5.252:8000/api/get-ambang-batas');
+      final response = await http.get(url);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        if (mounted) {
+          setState(() {
+            // Menimpa variabel lokal dengan data dari database web
+            thresholds = Thresholds(
+              phMin: double.tryParse(data['ph_min'].toString()) ?? 6.5,
+              phMax: double.tryParse(data['ph_max'].toString()) ?? 8.5,
+              suhuMin: double.tryParse(data['suhu_min'].toString()) ?? 26.0,
+              suhuMax: double.tryParse(data['suhu_max'].toString()) ?? 32.0,
+              tdsMin: double.tryParse(data['tds_min'].toString()) ?? 0.0,
+              tdsMax: double.tryParse(data['tds_max'].toString()) ?? 3000.0,
+              kekeruhanMin:
+                  double.tryParse(data['kekeruhan_min'].toString()) ?? 0.0,
+              kekeruhanMax:
+                  double.tryParse(data['kekeruhan_max'].toString()) ?? 50.0,
+            );
+          });
+        }
+      }
+    } catch (e) {
+      print('Gagal sinkronisasi ambang batas dari web: $e');
+    }
+  }
 
   void _changeTab(int index) {
     if (index == 1) {
@@ -469,36 +540,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'tds': '271',
     'kekeruhan': '18.0',
   };
-
-  final List<RecordItem> _records = [
-    RecordItem(
-      time: DateTime.now().subtract(const Duration(minutes: 60)),
-      ph: 7.2,
-      suhu: 28.8,
-      tds: 265,
-      kekeruhan: 16.0,
-      kualitas: 'Cukup',
-      status: 'Warning',
-    ),
-    RecordItem(
-      time: DateTime.now().subtract(const Duration(minutes: 30)),
-      ph: 7.3,
-      suhu: 29.0,
-      tds: 268,
-      kekeruhan: 17.2,
-      kualitas: 'Cukup',
-      status: 'Warning',
-    ),
-    RecordItem(
-      time: DateTime.now(),
-      ph: 7.4,
-      suhu: 29.2,
-      tds: 271,
-      kekeruhan: 18.0,
-      kualitas: 'Baik',
-      status: 'Normal',
-    ),
-  ];
 
   String _tempFilterStatus = 'Semua';
   DateTime? _tempFilterStartDate;
@@ -532,6 +573,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     _connect();
+    _fetchRecordsFromDatabase();
+    _fetchThresholds();
     _thirtyMinTimer = Timer.periodic(const Duration(minutes: 30), (timer) {
       _recordRealtimeData();
     });
@@ -610,15 +653,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-// ==========================================
-  // FUNGSI EKSPOR PDF (Persis Sama Sesuai Web)
+  // ==========================================
+  // FUNGSI EKSPOR PDF
   // ==========================================
   Future<void> _exportToPdf(List<RecordItem> dataToExport) async {
     try {
       final pdf = pw.Document();
 
       final now = DateTime.now();
-      // Format tanggal dan waktu disesuaikan agar mirip (contoh: 22/9/2026, 16.01.35)
       final dateStr =
           '${now.day}/${now.month}/${now.year}, ${now.hour.toString().padLeft(2, '0')}.${now.minute.toString().padLeft(2, '0')}.${now.second.toString().padLeft(2, '0')}';
       final fileDateStr =
@@ -629,7 +671,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           pageFormat: pw.PdfPageFormat.a4,
           margin: const pw.EdgeInsets.all(32),
           build: (pw.Context context) => [
-            // Judul Laporan menggunakan tanda hubung biasa (-) agar aman dari karakter korup (kotak)
             pw.Text(
               'AQUATOR - Laporan Kualitas Air',
               style: pw.TextStyle(
@@ -639,8 +680,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
             pw.SizedBox(height: 6),
-
-            // Sub-informasi waktu & jumlah data
             pw.Text(
               'Dicetak: $dateStr | Menampilkan total ${dataToExport.length} data monitoring',
               style: const pw.TextStyle(
@@ -649,8 +688,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
             pw.SizedBox(height: 14),
-
-            // Tabel Data PDF dengan Styling Identik seperti Web
             pw.Table.fromTextArray(
               headers: [
                 'Tanggal & Waktu',
@@ -672,7 +709,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   r.status,
                 ];
               }).toList(),
-              // Menyesuaikan lebar kolom agar proporsional dan tidak bergeser
               columnWidths: {
                 0: const pw.FlexColumnWidth(2.2),
                 1: const pw.FlexColumnWidth(0.9),
@@ -688,10 +724,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 color: const pw.PdfColor.fromInt(0xFF0F172A),
               ),
               headerDecoration: const pw.BoxDecoration(
-                color: pw.PdfColor.fromInt(
-                    0xFFCCECE6), // Warna toska persis seperti web
+                color: pw.PdfColor.fromInt(0xFFCCECE6),
               ),
-              // Border tipis elegan seperti tampilan web
               border: pw.TableBorder.all(
                 color: pw.PdfColor.fromInt(0xFFE2E8F0),
                 width: 0.6,
@@ -985,8 +1019,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() => _isAiLoading = true);
 
     try {
-      final url =
-          Uri.parse('http://192.168.68.207:8000/api/nama-endpoint-teman-anda');
+      final url = Uri.parse('http://172.14.5.252:8000/api/ai-rekomendasi');
 
       final response = await http.post(
         url,
@@ -1000,7 +1033,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
 
       if (response.statusCode == 200 || response.statusCode == 201) {
+        print('ISI DATA API AI: ${response.body}');
         final Map<String, dynamic> data = jsonDecode(response.body);
+
+        // Ambil langsung teks rekomendasinya
         final hasilAsli = data['rekomendasi'] ??
             data['data'] ??
             data['hasil'] ??
@@ -1008,11 +1044,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
         setState(() {
           _aiRecommendation = hasilAsli.toString();
-        });
-      } else {
-        setState(() {
-          _aiRecommendation =
-              'Peringatan ML: Gagal memproses data di server (Kode: ${response.statusCode})';
         });
       }
     } catch (e) {
@@ -1892,158 +1923,105 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           const SizedBox(height: 10),
-          Container(
-            decoration: BoxDecoration(
-              color: isDarkMode ? const Color(0xFF1E293B) : Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: const [
-                BoxShadow(color: Colors.black12, blurRadius: 4),
-              ],
-            ),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: DataTable(
-                columns: [
-                  DataColumn(
-                    label: Text(
-                      'Tanggal & Waktu',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: isDarkMode ? Colors.white70 : Colors.black87,
-                      ),
-                    ),
+          _isLoadingRecords
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(40.0),
+                    child: CircularProgressIndicator(),
                   ),
-                  DataColumn(
-                    label: Text(
-                      'pH',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: isDarkMode ? Colors.white70 : Colors.black87,
-                      ),
-                    ),
-                  ),
-                  DataColumn(
-                    label: Text(
-                      'Suhu (°C)',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: isDarkMode ? Colors.white70 : Colors.black87,
-                      ),
-                    ),
-                  ),
-                  DataColumn(
-                    label: Text(
-                      'TDS (ppm)',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: isDarkMode ? Colors.white70 : Colors.black87,
-                      ),
-                    ),
-                  ),
-                  DataColumn(
-                    label: Text(
-                      'NTU',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: isDarkMode ? Colors.white70 : Colors.black87,
-                      ),
-                    ),
-                  ),
-                  DataColumn(
-                    label: Text(
-                      'Kualitas Air',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: isDarkMode ? Colors.white70 : Colors.black87,
-                      ),
-                    ),
-                  ),
-                  DataColumn(
-                    label: Text(
-                      'Status',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: isDarkMode ? Colors.white70 : Colors.black87,
-                      ),
-                    ),
-                  ),
-                ],
-                rows: filteredRecords.map((item) {
-                  return DataRow(
-                    cells: [
-                      DataCell(
-                        Text(
-                          '${item.time.day} ${_monthName(item.time.month)} ${item.time.year}\n${item.time.hour.toString().padLeft(2, '0')}:${item.time.minute.toString().padLeft(2, '0')}:${item.time.second.toString().padLeft(2, '0')}',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: isDarkMode ? Colors.white70 : Colors.black87,
-                          ),
-                        ),
-                      ),
-                      DataCell(
-                        Text(
-                          item.ph.toStringAsFixed(1),
-                          style: const TextStyle(
-                            color: AppColors.ph,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      DataCell(
-                        Text(
-                          '${item.suhu.toStringAsFixed(1)}°C',
-                          style: TextStyle(
-                            color: AppColors.suhu,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      DataCell(
-                        Text(
-                          item.tds.toStringAsFixed(0),
-                          style: const TextStyle(
-                            color: AppColors.tds,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      DataCell(
-                        Text(
-                          item.kekeruhan.toStringAsFixed(1),
-                          style: const TextStyle(
-                            color: AppColors.kekeruhan,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      DataCell(
-                        Text(
-                          item.kualitas,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.warning,
-                          ),
-                        ),
-                      ),
-                      DataCell(
-                        Text(
-                          item.status,
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: item.status == 'Normal'
-                                ? AppColors.safe
-                                : (item.status == 'Warning'
-                                    ? AppColors.warning
-                                    : AppColors.danger),
-                          ),
-                        ),
-                      ),
+                )
+              : Container(
+                  decoration: BoxDecoration(
+                    color: isDarkMode ? const Color(0xFF1E293B) : Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black12, blurRadius: 4),
                     ],
-                  );
-                }).toList(),
-              ),
-            ),
-          ),
+                  ),
+                  child: Theme(
+                    data: Theme.of(context).copyWith(
+                      cardColor:
+                          isDarkMode ? const Color(0xFF1E293B) : Colors.white,
+                      dividerColor:
+                          isDarkMode ? Colors.white24 : Colors.black12,
+                    ),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: SizedBox(
+                        width: MediaQuery.of(context).size.width * 1.6,
+                        child: PaginatedDataTable(
+                          rowsPerPage: filteredRecords.isEmpty
+                              ? 1
+                              : (filteredRecords.length < 10
+                                  ? filteredRecords.length
+                                  : 10),
+                          columnSpacing: 15,
+                          horizontalMargin: 15,
+                          columns: [
+                            DataColumn(
+                                label: Text('No',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: isDarkMode
+                                            ? Colors.white70
+                                            : Colors.black87))),
+                            DataColumn(
+                                label: Text('Tanggal & Waktu',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: isDarkMode
+                                            ? Colors.white70
+                                            : Colors.black87))),
+                            DataColumn(
+                                label: Text('pH',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: isDarkMode
+                                            ? Colors.white70
+                                            : Colors.black87))),
+                            DataColumn(
+                                label: Text('Suhu (°C)',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: isDarkMode
+                                            ? Colors.white70
+                                            : Colors.black87))),
+                            DataColumn(
+                                label: Text('TDS (ppm)',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: isDarkMode
+                                            ? Colors.white70
+                                            : Colors.black87))),
+                            DataColumn(
+                                label: Text('NTU',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: isDarkMode
+                                            ? Colors.white70
+                                            : Colors.black87))),
+                            DataColumn(
+                                label: Text('Kualitas Air',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: isDarkMode
+                                            ? Colors.white70
+                                            : Colors.black87))),
+                            DataColumn(
+                                label: Text('Status',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: isDarkMode
+                                            ? Colors.white70
+                                            : Colors.black87))),
+                          ],
+                          source:
+                              _RecordDataSource(filteredRecords, isDarkMode),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
         ],
       ),
     );
@@ -3238,6 +3216,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     };
   }
 
+  // FUNGSI GANDA (Simpan MQTT dan Simpan HTTP Web)
   Future<void> _save() async {
     final t = Thresholds(
       phMin: _ranges['ph']!.start,
@@ -3251,13 +3230,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
 
     setState(() => _saving = true);
+
+    // 1. Tembak ke Alat ESP32 (Menggunakan fungsi onSave / MQTT)
     await widget.onSave(t);
+
+    // 2. Setor Data ke Web Laravel (Menggunakan HTTP POST)
+    try {
+      final url = Uri.parse('http://172.14.5.252/api/set-ambang-batas');
+      await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'ph_max': t.phMax,
+          'suhu_max': t.suhuMax,
+          'tds_max': t.tdsMax,
+          'kekeruhan_max': t.kekeruhanMax,
+          'ph_min': t.phMin,
+          'suhu_min': t.suhuMin,
+          'tds_min': t.tdsMin,
+          'kekeruhan_min': t.kekeruhanMin,
+        }),
+      );
+    } catch (e) {
+      debugPrint('Gagal mengirim batas ke Laravel API: $e');
+    }
+
     if (!mounted) return;
     setState(() => _saving = false);
 
+    // Memunculkan Notifikasi Berhasil
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Ambang batas disimpan & dikirim ke ESP32'),
+        content: Text('Ambang batas tersimpan di ESP32 & Web Laravel!'),
         backgroundColor: AppColors.safe,
       ),
     );
@@ -3301,6 +3305,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 20),
           ...kSensorDefs.map((def) => _buildSliderField(def)),
           const SizedBox(height: 8),
+
+          // TOMBOL PEMICU FUNGSI GANDA
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
@@ -3393,4 +3399,82 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
   }
+}
+
+// ==========================================
+// KELAS PENGATUR HALAMAN TABEL (PAGINATION)
+// ==========================================
+class _RecordDataSource extends DataTableSource {
+  final List<RecordItem> data;
+  final bool isDarkMode;
+
+  _RecordDataSource(this.data, this.isDarkMode);
+
+  String _monthName(int m) {
+    const months = [
+      '',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'Mei',
+      'Jun',
+      'Jul',
+      'Agu',
+      'Sep',
+      'Okt',
+      'Nov',
+      'Des'
+    ];
+    return months[m];
+  }
+
+  @override
+  DataRow? getRow(int index) {
+    if (index >= data.length) return null;
+    final item = data[index];
+
+    return DataRow(
+      cells: [
+        DataCell(Text('${index + 1}',
+            style: TextStyle(
+                color: isDarkMode ? Colors.white70 : Colors.black87))),
+        DataCell(Text(
+            '${item.time.day} ${_monthName(item.time.month)} ${item.time.year}\n${item.time.hour.toString().padLeft(2, '0')}:${item.time.minute.toString().padLeft(2, '0')}:${item.time.second.toString().padLeft(2, '0')}',
+            style: TextStyle(
+                fontSize: 11,
+                color: isDarkMode ? Colors.white70 : Colors.black87))),
+        DataCell(Text(item.ph.toStringAsFixed(1),
+            style: const TextStyle(
+                color: AppColors.ph, fontWeight: FontWeight.bold))),
+        DataCell(Text('${item.suhu.toStringAsFixed(1)}°C',
+            style: const TextStyle(
+                color: AppColors.suhu, fontWeight: FontWeight.bold))),
+        DataCell(Text(item.tds.toStringAsFixed(0),
+            style: const TextStyle(
+                color: AppColors.tds, fontWeight: FontWeight.bold))),
+        DataCell(Text(item.kekeruhan.toStringAsFixed(1),
+            style: const TextStyle(
+                color: AppColors.kekeruhan, fontWeight: FontWeight.bold))),
+        DataCell(Text(item.kualitas,
+            style: const TextStyle(
+                fontWeight: FontWeight.bold, color: AppColors.warning))),
+        DataCell(Text(item.status,
+            style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: item.status == 'Normal'
+                    ? AppColors.safe
+                    : (item.status == 'Warning'
+                        ? AppColors.warning
+                        : AppColors.danger)))),
+      ],
+    );
+  }
+
+  @override
+  bool get isRowCountApproximate => false;
+  @override
+  int get rowCount => data.length;
+  @override
+  int get selectedRowCount => 0;
 }
