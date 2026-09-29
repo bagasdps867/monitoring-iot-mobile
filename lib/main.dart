@@ -16,6 +16,11 @@ import 'package:pdf/pdf.dart' as pw;
 import 'package:pdf/widgets.dart' as pw;
 import 'package:permission_handler/permission_handler.dart';
 
+// ==========================================
+// KONFIGURASI UTAMA SERVER
+// ==========================================
+const String API_BASE_URL = 'http://10.131.52.155:8000';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MonitoringTambakApp());
@@ -230,12 +235,12 @@ class Thresholds {
   final double phMin, phMax;
 
   const Thresholds({
-    this.suhuMin = 26,
-    this.suhuMax = 32,
-    this.kekeruhanMin = 0,
-    this.kekeruhanMax = 50,
-    this.tdsMin = 0,
-    this.tdsMax = 3000,
+    this.suhuMin = 26.0,
+    this.suhuMax = 32.0,
+    this.kekeruhanMin = 0.0,
+    this.kekeruhanMax = 50.0,
+    this.tdsMin = 0.0,
+    this.tdsMax = 3000.0,
     this.phMin = 6.5,
     this.phMax = 8.5,
   });
@@ -451,7 +456,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _fetchRecordsFromDatabase() async {
     setState(() => _isLoadingRecords = true);
     try {
-      final url = Uri.parse('http://172.14.5.252:8000/api/laporan');
+      final url = Uri.parse('$API_BASE_URL/api/laporan');
       final response = await http.get(url);
       if (response.statusCode == 200) {
         final decodedData = jsonDecode(response.body);
@@ -477,8 +482,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       }
     } catch (e) {
-      // Jika masih ada yang gagal, error-nya akan muncul di Debug Console
-      print('GAGAL MEMBACA DATA JSON: $e');
+      debugPrint('GAGAL MEMBACA DATA JSON: $e');
     } finally {
       if (mounted) setState(() => _isLoadingRecords = false);
     }
@@ -486,8 +490,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _fetchThresholds() async {
     try {
-      // Pastikan URL dan port sesuai dengan server Laravel Anda
-      final url = Uri.parse('http://172.14.5.252:8000/api/get-ambang-batas');
+      final url = Uri.parse('$API_BASE_URL/api/get-ambang-batas');
       final response = await http.get(url);
 
       if (response.statusCode == 200) {
@@ -495,7 +498,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
         if (mounted) {
           setState(() {
-            // Menimpa variabel lokal dengan data dari database web
             thresholds = Thresholds(
               phMin: double.tryParse(data['ph_min'].toString()) ?? 6.5,
               phMax: double.tryParse(data['ph_max'].toString()) ?? 8.5,
@@ -512,7 +514,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
     } catch (e) {
-      print('Gagal sinkronisasi ambang batas dari web: $e');
+      debugPrint('Gagal sinkronisasi ambang batas dari web: $e');
     }
   }
 
@@ -534,11 +536,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  // --- KEMBALI MURNI: DATA MENUNGGU MQTT DARI ESP32 ---
   final Map<String, String> _values = {
-    'ph': '7.4',
-    'suhu': '29.2',
-    'tds': '271',
-    'kekeruhan': '18.0',
+    'ph':
+        '6.1', // Sengaja dibuat asam (di bawah 6.5) agar AI mendeteksi Warning
+    'suhu':
+        '33.5', // Sengaja dibuat panas (di atas 32) agar AI mendeteksi Warning
+    'tds': '1100', // Sengaja dibuat tinggi (di atas 1000)
+    'kekeruhan': '55.0',
   };
 
   String _tempFilterStatus = 'Semua';
@@ -580,9 +585,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  // ==========================================
-  // FUNGSI EKSPOR EXCEL
-  // ==========================================
   Future<void> _exportToExcel(List<RecordItem> dataToExport) async {
     try {
       var status = await Permission.storage.request();
@@ -653,9 +655,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  // ==========================================
-  // FUNGSI EKSPOR PDF
-  // ==========================================
   Future<void> _exportToPdf(List<RecordItem> dataToExport) async {
     try {
       final pdf = pw.Document();
@@ -963,40 +962,52 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Map<String, dynamic> _calculateWaterQuality() {
-    double score = 100;
-    int abnormalCount = 0;
+    final phVal = double.tryParse(_values['ph'] ?? '7.0') ?? 7.0;
+    final suhuVal = double.tryParse(_values['suhu'] ?? '28.0') ?? 28.0;
+    final tdsVal = double.tryParse(_values['tds'] ?? '250') ?? 250.0;
+    final kekVal = double.tryParse(_values['kekeruhan'] ?? '15.0') ?? 15.0;
 
-    for (final def in kSensorDefs) {
-      final lvl = _levelFor(def.key);
-      if (lvl == SensorLevel.warning) {
-        score -= 22.5;
-        abnormalCount++;
-      }
+    if (_values['ph'] == '--' && _values['suhu'] == '--') {
+      return {
+        'score': 100.0,
+        'status': 'Normal',
+        'conditionText': 'NORMAL',
+        'color': AppColors.safe,
+        'summary': 'Menunggu data sensor masuk...',
+      };
     }
 
-    score = score.clamp(15.0, 100.0);
+    double finalScore = 100.0;
+
+    if (phVal < thresholds.phMin || phVal > thresholds.phMax) finalScore -= 25;
+    if (suhuVal < thresholds.suhuMin || suhuVal > thresholds.suhuMax)
+      finalScore -= 25;
+    if (tdsVal < thresholds.tdsMin || tdsVal > thresholds.tdsMax)
+      finalScore -= 25;
+    if (kekVal < thresholds.kekeruhanMin || kekVal > thresholds.kekeruhanMax)
+      finalScore -= 25;
+
+    finalScore = finalScore.clamp(10.0, 100.0);
 
     String status = 'Normal';
-    String conditionText = 'BAIK';
+    String conditionText = 'NORMAL';
     Color color = AppColors.safe;
-    String summary = 'Semua parameter berada dalam kondisi aman.';
+    String summary = 'Semua parameter dalam kondisi aman dan optimal.';
 
-    if (score < 55 || abnormalCount >= 2) {
+    if (finalScore < 50) {
       status = 'Critical';
       conditionText = 'BURUK';
       color = AppColors.danger;
-      summary =
-          '$abnormalCount parameter membutuhkan tindakan penanganan segera!';
-    } else if (score < 80 || abnormalCount == 1) {
+      summary = 'Kualitas air kritis, butuh penanganan segera!';
+    } else if (finalScore < 80) {
       status = 'Warning';
       conditionText = 'CUKUP';
       color = AppColors.warning;
-      summary =
-          'Kualitas air cukup stabil, pantau parameter yang mengalami deviasi.';
+      summary = 'Kualitas air kurang stabil, pantau parameter deviasi.';
     }
 
     return {
-      'score': score,
+      'score': finalScore,
       'status': status,
       'conditionText': conditionText,
       'color': color,
@@ -1019,7 +1030,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() => _isAiLoading = true);
 
     try {
-      final url = Uri.parse('http://172.14.5.252:8000/api/ai-rekomendasi');
+      final url = Uri.parse('$API_BASE_URL/api/ai-rekomendasi');
 
       final response = await http.post(
         url,
@@ -1033,23 +1044,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        print('ISI DATA API AI: ${response.body}');
-        final Map<String, dynamic> data = jsonDecode(response.body);
-
-        // Ambil langsung teks rekomendasinya
-        final hasilAsli = data['rekomendasi'] ??
-            data['data'] ??
-            data['hasil'] ??
-            response.body;
+        String hasilAsli = '';
+        try {
+          final decoded = jsonDecode(response.body);
+          if (decoded is Map) {
+            hasilAsli = decoded['rekomendasi']?.toString() ??
+                decoded['hasil']?.toString() ??
+                decoded['data']?.toString() ??
+                response.body;
+          } else {
+            hasilAsli = response.body;
+          }
+        } catch (_) {
+          hasilAsli = response.body;
+        }
 
         setState(() {
-          _aiRecommendation = hasilAsli.toString();
+          _aiRecommendation = hasilAsli;
+        });
+      } else {
+        setState(() {
+          _aiRecommendation =
+              'Gagal memuat rekomendasi dari server (Error ${response.statusCode})';
         });
       }
     } catch (e) {
       setState(() {
         _aiRecommendation =
-            'Gagal menghubungi server web backend. Pastikan Laragon menyala.';
+            'Gagal menghubungi server web backend. Pastikan Laragon menyala & IP benar.';
       });
     } finally {
       if (mounted) setState(() => _isAiLoading = false);
@@ -1057,7 +1079,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _openSettings() {
-    Navigator.of(context).push(
+    Navigator.of(context)
+        .push(
       MaterialPageRoute(
         builder: (_) => SettingsScreen(
           initial: thresholds,
@@ -1065,7 +1088,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           isDarkMode: isDarkMode,
         ),
       ),
-    );
+    )
+        .then((_) {
+      _fetchThresholds();
+      setState(() {});
+    });
   }
 
   Widget _buildAiResponseContent(String rawText) {
@@ -1948,14 +1975,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
                       child: SizedBox(
-                        width: MediaQuery.of(context).size.width * 1.6,
+                        width:
+                            1000, // Mengunci lebar agar tabel tidak crash (Layar putih)
                         child: PaginatedDataTable(
                           rowsPerPage: filteredRecords.isEmpty
                               ? 1
                               : (filteredRecords.length < 10
                                   ? filteredRecords.length
                                   : 10),
-                          columnSpacing: 15,
+                          columnSpacing: 20,
                           horizontalMargin: 15,
                           columns: [
                             DataColumn(
@@ -2179,6 +2207,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 width: 32,
                 height: 32,
                 fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) =>
+                    const Icon(Icons.water_drop, color: Colors.white),
               ),
             ),
             const SizedBox(width: 10),
@@ -2841,6 +2871,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .reversed
         .toList();
 
+    // Limit ke 30 titik agar grafik tidak kusut
+    if (displayData.length > 30) {
+      displayData = displayData.sublist(displayData.length - 30);
+    }
+
     if (displayData.isEmpty) {
       final currentNum = double.tryParse(_values[_chartSensor] ?? '') ?? 0.0;
       displayData = [currentNum, currentNum];
@@ -3079,7 +3114,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final allValues = [...data, min, max];
     final chartMin = allValues.reduce((a, b) => a < b ? a : b);
     final chartMax = allValues.reduce((a, b) => a > b ? a : b);
-    final pad = (chartMax - chartMin) * 0.15 + 0.2;
+
+    // PERBAIKAN FATAL: Menghindari FlChart crash jika nilai min dan max kembar
+    double pad = (chartMax - chartMin) * 0.15 + 0.2;
+    if (chartMin == chartMax) pad = 2.0;
 
     return LineChartData(
       minY: (chartMin - pad).clamp(0.0, double.infinity),
@@ -3101,7 +3139,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           sideTitles: SideTitles(
             showTitles: true,
             reservedSize: 42,
-            interval: (chartMax - chartMin + pad * 2) / 3,
+            interval: ((chartMax - chartMin + pad * 2) / 3)
+                .clamp(0.1, double.infinity),
             getTitlesWidget: (value, meta) => Padding(
               padding: const EdgeInsets.only(right: 6),
               child: Text(
@@ -3216,7 +3255,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     };
   }
 
-  // FUNGSI GANDA (Simpan MQTT dan Simpan HTTP Web)
   Future<void> _save() async {
     final t = Thresholds(
       phMin: _ranges['ph']!.start,
@@ -3231,12 +3269,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     setState(() => _saving = true);
 
-    // 1. Tembak ke Alat ESP32 (Menggunakan fungsi onSave / MQTT)
     await widget.onSave(t);
 
-    // 2. Setor Data ke Web Laravel (Menggunakan HTTP POST)
     try {
-      final url = Uri.parse('http://172.14.5.252/api/set-ambang-batas');
+      final url = Uri.parse('$API_BASE_URL/api/set-ambang-batas');
       await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
@@ -3258,14 +3294,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() => _saving = false);
 
-    // Memunculkan Notifikasi Berhasil
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Ambang batas tersimpan di ESP32 & Web Laravel!'),
+        content: Text('Ambang batas tersimpan di ESP32 & Web Monitoring'),
         backgroundColor: AppColors.safe,
       ),
     );
     Navigator.of(context).pop();
+  }
+
+  Future<void> _confirmSave() async {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor:
+              widget.isDarkMode ? const Color(0xFF1E293B) : Colors.white,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(
+            'Konfirmasi',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: widget.isDarkMode ? Colors.white : Colors.black87,
+            ),
+          ),
+          content: Text(
+            'Apakah Anda yakin untuk mengatur ambang batasnya?',
+            style: TextStyle(
+              color: widget.isDarkMode ? Colors.white70 : Colors.black87,
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Batal',
+                  style: TextStyle(color: AppColors.textMuted)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _save();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: const Text('Yakin'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   String _fmt(SensorDef def, double v) => def.decimals == 0
@@ -3305,12 +3389,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 20),
           ...kSensorDefs.map((def) => _buildSliderField(def)),
           const SizedBox(height: 8),
-
-          // TOMBOL PEMICU FUNGSI GANDA
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: _saving ? null : _save,
+              onPressed: _saving ? null : _confirmSave,
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primary,
                 foregroundColor: Colors.white,
