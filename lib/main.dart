@@ -19,7 +19,7 @@ import 'package:permission_handler/permission_handler.dart';
 // ==========================================
 // KONFIGURASI UTAMA SERVER
 // ==========================================
-const String API_BASE_URL = 'http://10.131.52.155:8000';
+const String API_BASE_URL = 'http://192.168.68.120:8000';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -456,7 +456,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _fetchRecordsFromDatabase() async {
     setState(() => _isLoadingRecords = true);
     try {
-      final url = Uri.parse('$API_BASE_URL/api/laporan');
+      final url = Uri.parse('http://192.168.68.120:8000/api/laporan');
       final response = await http.get(url);
       if (response.statusCode == 200) {
         final decodedData = jsonDecode(response.body);
@@ -490,7 +490,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _fetchThresholds() async {
     try {
-      final url = Uri.parse('$API_BASE_URL/api/get-ambang-batas');
+      final url = Uri.parse(
+          'http://192.168.68.120:8000/api//get-ambang-batas'); // <-- Garis miring dua kali
       final response = await http.get(url);
 
       if (response.statusCode == 200) {
@@ -536,14 +537,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  // --- KEMBALI MURNI: DATA MENUNGGU MQTT DARI ESP32 ---
   final Map<String, String> _values = {
-    'ph':
-        '6.1', // Sengaja dibuat asam (di bawah 6.5) agar AI mendeteksi Warning
-    'suhu':
-        '33.5', // Sengaja dibuat panas (di atas 32) agar AI mendeteksi Warning
-    'tds': '1100', // Sengaja dibuat tinggi (di atas 1000)
-    'kekeruhan': '55.0',
+    'ph': '--',
+    'suhu': '--',
+    'tds': '--',
+    'kekeruhan': '--',
   };
 
   String _tempFilterStatus = 'Semua';
@@ -1030,8 +1028,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() => _isAiLoading = true);
 
     try {
-      final url = Uri.parse('$API_BASE_URL/api/ai-rekomendasi');
-
+      final url = Uri.parse('http://192.168.68.120:8000/api/ai-rekomendasi');
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
@@ -1975,8 +1972,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
                       child: SizedBox(
-                        width:
-                            1000, // Mengunci lebar agar tabel tidak crash (Layar putih)
+                        width: 1000,
                         child: PaginatedDataTable(
                           rowsPerPage: filteredRecords.isEmpty
                               ? 1
@@ -2859,9 +2855,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             case 'suhu':
               return r.suhu;
             case 'tds':
-              return r.tds;
+              return r.tds; // <-- Pastikan membaca r.tds
             case 'kekeruhan':
-              return r.kekeruhan;
+              return r.kekeruhan; // <-- Pastikan membaca r.kekeruhan
             case 'ph':
             default:
               return r.ph;
@@ -2871,7 +2867,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .reversed
         .toList();
 
-    // Limit ke 30 titik agar grafik tidak kusut
     if (displayData.length > 30) {
       displayData = displayData.sublist(displayData.length - 30);
     }
@@ -3111,16 +3106,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       (i) => FlSpot(i.toDouble(), data[i]),
     );
 
-    final allValues = [...data, min, max];
+    // PERBAIKAN: Hanya hitung skala Y berdasarkan data riil agar grafik otomatis melakukan zoom
+    final allValues = data.isNotEmpty ? [...data] : [0.0, 1.0];
     final chartMin = allValues.reduce((a, b) => a < b ? a : b);
     final chartMax = allValues.reduce((a, b) => a > b ? a : b);
 
-    // PERBAIKAN FATAL: Menghindari FlChart crash jika nilai min dan max kembar
-    double pad = (chartMax - chartMin) * 0.15 + 0.2;
+    double pad = (chartMax - chartMin) * 0.2 + 0.5;
     if (chartMin == chartMax) pad = 2.0;
 
     return LineChartData(
-      minY: (chartMin - pad).clamp(0.0, double.infinity),
+      minY: (chartMin - pad).clamp(def.physicalMin, double.infinity),
       maxY: chartMax + pad,
       gridData: const FlGridData(
         show: true,
@@ -3272,7 +3267,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await widget.onSave(t);
 
     try {
-      final url = Uri.parse('$API_BASE_URL/api/set-ambang-batas');
+      final url = Uri.parse('http://192.168.68.120:8000/api//set-ambang-batas');
       await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
